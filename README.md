@@ -16,7 +16,7 @@ Open `http://localhost:8080`.
 
 ```bash
 docker build -t devopsshack/migration-demo .
-docker run --rm -p 8080:8080 devopsshack/migration-demo
+docker run --rm -p 8081:8080 devopsshack/migration-demo
 ```
 
 ## Endpoints
