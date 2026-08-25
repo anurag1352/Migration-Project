@@ -39,12 +39,10 @@ jobs:
 
 
       - name: Install dependencies
-        working-directory: app
         run: npm install
 
 
       - name: Run tests
-        working-directory: .
         run: npm test
 
 
