@@ -1,4 +1,3 @@
-#  trigger Test-2
 name: Jenkins Migration CI-CD
 
 on:
@@ -32,53 +31,44 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: 22
 
-
       - name: Install dependencies
         run: npm install
 
-
       - name: Run tests
         run: npm test
-
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/GitHubActionsMigrationRole
           aws-region: ${{ env.AWS_REGION }}
-
+          audience: sts.amazonaws.com
 
       - name: Verify AWS identity
         run: |
           aws sts get-caller-identity
 
-
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-
       - name: Build Docker image
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-
         run: |
           echo "Building Docker image..."
 
           docker build \
             -t $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
 
-
       - name: Push Docker image
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-
         run: |
           echo "Pushing Docker image..."
 
@@ -99,9 +89,13 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/GitHubActionMigrationRole
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/GitHubActionsMigrationRole
           aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
 
+      - name: Verify AWS identity
+        run: |
+          aws sts get-caller-identity
 
       - name: Deploy using AWS Systems Manager
         env:
@@ -134,7 +128,6 @@ jobs:
             --instance-id "$EC2_INSTANCE_ID"
 
           echo "Deployment completed."
-
 
       - name: Smoke test
         env:
