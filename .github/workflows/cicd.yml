@@ -1,4 +1,3 @@
-# Migrate from jenkins to GitHub-Actions
 name: Jenkins Migration CI-CD
 
 on:
