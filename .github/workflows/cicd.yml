@@ -1,10 +1,14 @@
-name: CI/CD Pipeline
+#  trigger Test-2
+name: Jenkins Migration CI-CD
 
 on:
   push:
     branches:
       - main
-  workflow_dispatch:
+
+  pull_request:
+    branches:
+      - main
 
 permissions:
   id-token: write
@@ -13,87 +17,137 @@ permissions:
 env:
   AWS_REGION: us-east-2
   ECR_REPOSITORY: migration-pipeline
-  APP_PORT: "8081"
+  IMAGE_TAG: ${{ github.sha }}
 
 jobs:
+
   build-test-push:
-    name: Build, test and push image
+
+    name: Build, Test and Push
+
     runs-on: ubuntu-latest
-    outputs:
-      image-uri: ${{ steps.push-image.outputs.image-uri }}
 
     steps:
-      - name: Checkout source code
-        uses: actions/checkout@v4
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
-          cache: npm
+
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
-      - name: Run project tests
+
+      - name: Run tests
         run: npm test
 
-      - name: Configure AWS credentials using OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/Github-actions-deploy-role
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/GitHubActionsMigrationRole
           aws-region: ${{ env.AWS_REGION }}
 
+
+      - name: Verify AWS identity
+        run: |
+          aws sts get-caller-identity
+
+
       - name: Login to Amazon ECR
-        id: ecr-login
+        id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build Docker image
-        run: docker build -t ${{ env.ECR_REPOSITORY }}:${{ github.sha }} .
 
-      - name: Push Docker image to ECR
-        id: push-image
+      - name: Build Docker image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+
         run: |
-          IMAGE_URI="${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}"
-          docker tag ${{ env.ECR_REPOSITORY }}:${{ github.sha }} "$IMAGE_URI"
-          docker push "$IMAGE_URI"
-          echo "image-uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
+          echo "Building Docker image..."
+
+          docker build \
+            -t $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+
+
+      - name: Push Docker image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+
+        run: |
+          echo "Pushing Docker image..."
+
+          docker push \
+            $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
 
   deploy:
-    name: Deploy to EC2 via AWS Systems Manager
+
+    name: Deploy to Application EC2
+
     needs: build-test-push
+
     runs-on: ubuntu-latest
 
     steps:
-      - name: Configure AWS credentials using OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-deploy-role
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/GitHubActionsMigrationRole
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy container on EC2
+
+      - name: Deploy using AWS Systems Manager
+        env:
+          EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+          ECR_REGISTRY: ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-2.amazonaws.com
+
         run: |
-          set -e
-          ECR_REGISTRY="${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+
+          echo "Deploying to EC2..."
+
           COMMAND_ID=$(aws ssm send-command \
-            --instance-ids "${{ vars.EC2_INSTANCE_ID }}" \
+            --instance-ids "$EC2_INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --parameters "commands=[\
-              set -e,\
-              aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin $ECR_REGISTRY,\
-              docker stop app || true,\
-              docker rm app || true,\
-              docker pull ${{ needs.build-test-push.outputs.image-uri }},\
-              docker run -d --name app -p ${{ env.APP_PORT }}:8080 ${{ needs.build-test-push.outputs.image-uri }},\
-              curl --fail http://localhost:${{ env.APP_PORT }}/health\
+            --parameters commands="[
+              \"aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY\",
+              \"docker pull $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG\",
+              \"docker stop app || true\",
+              \"docker rm app || true\",
+              \"docker run -d --name app -p 8082:8080 $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG\"
             ]" \
-            --query 'Command.CommandId' \
+            --query "Command.CommandId" \
             --output text)
 
-          echo "SSM command id: $COMMAND_ID"
-          aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "${{ vars.EC2_INSTANCE_ID }}"
-          aws ssm get-command-invocation \
+          echo "SSM Command ID: $COMMAND_ID"
+
+          echo "Waiting for deployment..."
+
+          aws ssm wait command-executed \
             --command-id "$COMMAND_ID" \
-            --instance-id "${{ vars.EC2_INSTANCE_ID }}" \
-            --query 'StandardOutputContent' \
-            --output text
+            --instance-id "$EC2_INSTANCE_ID"
+
+          echo "Deployment completed."
+
+
+      - name: Smoke test
+        env:
+          EC2_PUBLIC_IP: ${{ vars.EC2_PUBLIC_IP }}
+
+        run: |
+
+          echo "Running application health check..."
+
+          sleep 5
+
+          curl --fail \
+            http://$EC2_PUBLIC_IP:8082/health
+
+          echo ""
+          echo "Smoke test passed!"
